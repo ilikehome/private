@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	PID_CMD          = "/bin/ps -ef|grep '%s' |/bin/grep -v grep|/bin/awk '{print $2}'"
+	PID_CMD          = "/usr/bin/ps -ef|/usr/bin/grep '%s' |/usr/bin/grep -v grep|/usr/bin/awk '{print $2}'"
 	CGROUP_MEM_MOUNT = "/sys/fs/cgroup/memory/nba"
 	CGROUP_CPU_MOUNT = "/sys/fs/cgroup/cpu/nba"
 )
@@ -22,7 +22,8 @@ func main() {
 		show()
 		return
 	}
-	catalog, cpu, memValue, memUnit, greps := getParameter()
+	catalog, cpu, mem, greps := getParameter()
+
 	os.Mkdir(CGROUP_MEM_MOUNT, 0755)
 	os.Mkdir(CGROUP_CPU_MOUNT, 0755)
 	pid := getPid(greps)
@@ -30,8 +31,20 @@ func main() {
 		fmt.Printf("Progress is not found.\n")
 		return
 	}
-	write(pid, catalog, cpu, memValue, memUnit)
-	fmt.Println(cpu, memValue, memUnit, pid)
+
+	memValue := mem
+	write(pid, catalog, int(cpu*100000), memValue)
+
+	cpuInfo := strconv.FormatFloat(cpu, 'f', -1, 64)
+	if cpu <=0{
+		cpuInfo = "Unlimited"
+	}
+	memInfo := mem
+	if mem ==""{
+		memInfo = "Unlimited"
+	}
+
+	fmt.Printf("Set PID(%d), MaxMem=%s, MaxCpu=%s Success.\n", pid, memInfo, cpuInfo)
 }
 
 func show(){
@@ -55,46 +68,52 @@ func isContain(arr []string, ele string) bool{
 func getPid(greps string) (pid int){
 	pidGrepCmd := fmt.Sprintf(PID_CMD, greps)
 	cmd := exec.Command("/bin/sh", "-c", pidGrepCmd)
-	if buf, err := cmd.Output(); err == nil{
-		if pid,err := strconv.Atoi(string(buf[:len(buf)-1])); err==nil{
-			return pid
+	buf, err := cmd.Output()
+	if err == nil{
+		return readFirstLine(buf)
+	}else{
+		fmt.Printf("%v", err)
+		return -1
+	}
+}
+
+func readFirstLine(buf []byte) (pid int){
+	inx := len(buf)
+	for n,x:= range buf{
+		if x=='\n'{
+			inx = n
+			break
 		}
+	}
+	firstLine := string(buf[:inx])
+	if pid,err := strconv.Atoi(firstLine); err==nil{
+		return pid
 	}
 	return -1
 }
 
-func write(pid int, catalog string, cpu int, memValue int, memUnit string){
-	cpuLimit := "Unlimited"
-	if cpu!=0{
+func write(pid int, catalog string, cpu int, mem string){
+	if cpu>=0{
+		cpuLimit := strconv.Itoa(cpu)
 		os.Mkdir(path.Join(CGROUP_CPU_MOUNT, catalog), 0755)
 		ioutil.WriteFile(path.Join(CGROUP_CPU_MOUNT, catalog, "tasks") , []byte(strconv.Itoa(pid)), 0644)
-		ioutil.WriteFile(path.Join(CGROUP_CPU_MOUNT, catalog, "memory.limit_in_bytes") , []byte("100m"), 0644)
-		cpuLimit = strconv.Itoa(cpu)
+		ioutil.WriteFile(path.Join(CGROUP_CPU_MOUNT, catalog, "cpu.cfs_quota_us") , []byte(cpuLimit), 0644)
 	}
-	memLimit := "Unlimited"
-	if memValue!=0{
-		memLimit = strconv.Itoa(memValue)+ memUnit
+
+	if mem != ""{
 		os.Mkdir(path.Join(CGROUP_MEM_MOUNT, catalog), 0755)
 		ioutil.WriteFile(path.Join(CGROUP_MEM_MOUNT, catalog, "tasks") , []byte(strconv.Itoa(pid)), 0644)
-		ioutil.WriteFile(path.Join(CGROUP_MEM_MOUNT, catalog, "memory.limit_in_bytes") , []byte(memLimit), 0644)
+		ioutil.WriteFile(path.Join(CGROUP_MEM_MOUNT, catalog, "memory.limit_in_bytes") , []byte(mem), 0644)
 	}
-	fmt.Printf("Set PID(%d), MaxMem=%s, MaxCpu=%d Success.\n", pid, memLimit, cpuLimit)
 }
 
-func getParameter() (catalog string, cpuValue int, memValue int, memUint string, cmd string){
+func getParameter() (catalog string, cpuValue float64, memValue string, cmd string){
 	catalog = *flag.String("catalog", "", "Input your limit type")
-	cpu := flag.Int("cpu", 0, "Input your cpu number")
+	cpu := flag.Float64("cpu", 0, "Input your cpu number")
 	mem := flag.String("mem", "", "Input your memory number")
 	flag.Parse()
 	cpuValue = *cpu
-
-	memString := []rune(*mem)
-	memValue,_ = strconv.Atoi(string(memString[0:len(memString)-2]))
-	if strings.HasSuffix(strings.ToUpper(*mem), "MB"){
-		memUint = "MB"
-	}else if strings.HasSuffix(strings.ToUpper(*mem), "GB"){
-		memUint = "GB"
-	}
+	memValue = *mem
 
 	args := os.Args[1:]
 	cmdLines := []string{}
